@@ -86,10 +86,64 @@
     }
 
     ::selection { background: var(--brand-300); }
+
+    /* Dificulta seleção/cópia do conteúdo da página (não bloqueia acesso ao código-fonte) */
+    body {
+      -webkit-user-select: none;
+      -moz-user-select: none;
+      user-select: none;
+    }
+    input, textarea, [contenteditable="true"] {
+      -webkit-user-select: text;
+      -moz-user-select: text;
+      user-select: text;
+    }
   </style>
 </head>
 <body>
   <div id="root"></div>
+
+  <script>
+    // Camada de dissuasão contra cópia casual do conteúdo/código.
+    // Importante: isto não impede alguém tecnicamente capaz de ver o
+    // código-fonte (todo site estático é enviado por inteiro ao navegador).
+    (function () {
+      var isFormField = function (el) {
+        return el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
+      };
+
+      document.addEventListener('contextmenu', function (e) {
+        e.preventDefault();
+      });
+
+      document.addEventListener('copy', function (e) {
+        if (!isFormField(e.target)) e.preventDefault();
+      });
+
+      document.addEventListener('cut', function (e) {
+        if (!isFormField(e.target)) e.preventDefault();
+      });
+
+      document.addEventListener('dragstart', function (e) {
+        if (!isFormField(e.target)) e.preventDefault();
+      });
+
+      document.addEventListener('keydown', function (e) {
+        var k = e.key;
+        var blocked =
+          k === 'F12' ||
+          (e.ctrlKey && e.shiftKey && ['I', 'i', 'J', 'j', 'C', 'c'].includes(k)) ||
+          (e.metaKey && e.altKey && ['I', 'i', 'J', 'j', 'C', 'c'].includes(k)) ||
+          (e.ctrlKey && ['U', 'u', 'S', 's'].includes(k)) ||
+          (e.metaKey && ['U', 'u', 'S', 's'].includes(k));
+        if (blocked) e.preventDefault();
+      });
+
+      console.log('%cAviso', 'color:#dc2626;font-size:20px;font-weight:bold;');
+      console.log('%cEste sistema é de uso exclusivo da Direct Control. Cópia ou reprodução do código não autorizada.', 'font-size:13px;');
+    })();
+  </script>
+
   <script type="text/babel">
     const { useState, useEffect, useRef, useMemo, useCallback } = React;
 
@@ -1102,10 +1156,6 @@
               <p>
                 Criado por <a href="https://directcontrol.com.br" target="_blank" rel="noopener noreferrer" className="text-green-600 hover:underline font-medium">Direct Control</a>
                 {' '}· BPM & Publicidade · Marketing
-              </p>
-              <p className="text-xs mt-1">
-                Dados fornecidos pela API pública{' '}
-                <a href="https://publica.cnpj.ws" target="_blank" rel="noopener noreferrer" className="text-green-500 hover:underline">publica.cnpj.ws</a>
               </p>
             </footer>
           </div>
