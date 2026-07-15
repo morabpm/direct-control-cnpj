@@ -1,0 +1,1119 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Direct Control · Consulta CNPJ</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%23064e3b'/%3E%3Cpath d='M30 70V30h15a12 12 0 0 1 0 24H35' stroke='%236ee7b7' stroke-width='7' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M62 70V30' stroke='%236ee7b7' stroke-width='7' stroke-linecap='round'/%3E%3C/svg%3E" />
+  <meta name="description" content="Consulta de dados públicos de CNPJ na Receita Federal" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --brand-900: #064e3b;
+      --brand-700: #047857;
+      --brand-600: #059669;
+      --brand-500: #10b981;
+      --brand-300: #6ee7b7;
+      --brand-100: #d1fae5;
+      --brand-50: #ecfdf5;
+    }
+    body {
+      background: var(--brand-50);
+      font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+    }
+    .bg-direct { background: linear-gradient(135deg, var(--brand-900) 0%, #0f766e 100%); }
+    .text-direct { color: var(--brand-600); }
+    .btn-direct {
+      background: var(--brand-600);
+      transition: background .15s ease, transform .1s ease;
+    }
+    .btn-direct:hover { background: var(--brand-700); }
+    .btn-direct:active { transform: scale(0.98); }
+    .btn-direct:disabled { opacity: .6; cursor: not-allowed; }
+    .card-shadow { box-shadow: 0 4px 20px rgba(0, 80, 0, 0.08); }
+    .tab-active { background: var(--brand-600); color: white; }
+    .tab-inactive { background: var(--brand-100); color: var(--brand-900); }
+    .tab-inactive:hover { background: #a7f3d0; }
+    .raw-json {
+      background: var(--brand-900);
+      color: var(--brand-100);
+      border-radius: 0.75rem;
+      padding: 1rem;
+      overflow: auto;
+      max-height: 500px;
+      font-size: 0.8rem;
+    }
+    .field-count {
+      background: var(--brand-100);
+      color: #065f46;
+      font-weight: 600;
+      padding: 0.25rem 0.75rem;
+      border-radius: 9999px;
+    }
+    .history-item { border-left: 4px solid var(--brand-600); padding-left: 0.75rem; margin-bottom: 0.5rem; }
+    .logo-text { font-size: 1.7rem; font-weight: 800; letter-spacing: -0.5px; color: white; }
+    .logo-sub { color: var(--brand-300); }
+    .fade-in { animation: fadeIn 0.3s ease-in-out; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: translateY(0); } }
+    .bg-green-soft { background-color: var(--brand-50); }
+
+    /* Skeleton */
+    .skeleton {
+      background: linear-gradient(90deg, #e5f5ee 25%, #d7f0e2 37%, #e5f5ee 63%);
+      background-size: 400% 100%;
+      animation: skeleton-wave 1.4s ease infinite;
+      border-radius: 0.5rem;
+    }
+    @keyframes skeleton-wave { 0% { background-position: 100% 50%; } 100% { background-position: 0 50%; } }
+
+    /* Toasts */
+    .toast-enter { animation: toastIn .25s ease-out; }
+    @keyframes toastIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
+
+    /* Modal */
+    .modal-backdrop { animation: fadeIn .15s ease-out; }
+    .modal-panel { animation: modalIn .18s cubic-bezier(.2,.8,.2,1); }
+    @keyframes modalIn { from { opacity: 0; transform: scale(.95) translateY(6px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+
+    input:focus-visible, button:focus-visible, a:focus-visible {
+      outline: 2px solid var(--brand-600);
+      outline-offset: 2px;
+    }
+
+    ::selection { background: var(--brand-300); }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useEffect, useRef, useMemo, useCallback } = React;
+
+    // =====================================================================
+    // Utilitários de armazenamento seguro (localStorage pode falhar em modo
+    // privado, com quota excedida, ou em ambientes sem suporte)
+    // =====================================================================
+    const safeStorage = {
+      get(key) {
+        try {
+          const raw = localStorage.getItem(key);
+          return raw ? JSON.parse(raw) : null;
+        } catch (e) {
+          console.warn('Falha ao ler armazenamento local:', e);
+          return null;
+        }
+      },
+      set(key, value) {
+        try {
+          localStorage.setItem(key, JSON.stringify(value));
+          return true;
+        } catch (e) {
+          console.warn('Falha ao salvar no armazenamento local:', e);
+          return false;
+        }
+      },
+      remove(key) {
+        try { localStorage.removeItem(key); } catch (e) { /* ignore */ }
+      }
+    };
+
+    // ---------- Formatação ----------
+    const formatCNPJ = (value) => {
+      const digits = (value || '').replace(/\D/g, '');
+      if (digits.length <= 2) return digits;
+      if (digits.length <= 5) return digits.replace(/^(\d{2})(\d{0,3})/, '$1.$2');
+      if (digits.length <= 8) return digits.replace(/^(\d{2})(\d{3})(\d{0,3})/, '$1.$2.$3');
+      if (digits.length <= 12) return digits.replace(/^(\d{2})(\d{3})(\d{3})(\d{0,4})/, '$1.$2.$3/$4');
+      return digits.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{0,2})/, '$1.$2.$3/$4-$5');
+    };
+
+    const unformatCNPJ = (str) => (str || '').replace(/\D/g, '');
+
+    const formatCEP = (cep) => {
+      const digits = (cep || '').replace(/\D/g, '');
+      if (digits.length <= 5) return digits;
+      return digits.replace(/^(\d{5})(\d{0,3})/, '$1-$2');
+    };
+
+    const formatDate = (dateStr) => {
+      if (!dateStr) return '';
+      if (dateStr.includes('/')) return dateStr;
+      const parts = dateStr.split('-');
+      if (parts.length === 3) return `${parts[2]}/${parts[1]}/${parts[0]}`;
+      return dateStr;
+    };
+
+    const formatBoolean = (val) => {
+      if (val === true || val === 'true' || val === 1 || val === '1') return 'Sim';
+      if (val === false || val === 'false' || val === 0 || val === '0') return 'Não';
+      return val;
+    };
+
+    const formatCurrency = (val) => {
+      if (val === undefined || val === null || val === '') return '';
+      const num = typeof val === 'string' ? parseFloat(val.replace(/[^\d,.-]/g, '').replace(',', '.')) : val;
+      if (isNaN(num)) return String(val);
+      return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(num);
+    };
+
+    const formatValue = (key, value) => {
+      if (value === null || value === undefined) return null;
+      if (typeof value === 'boolean') return formatBoolean(value);
+      if (typeof value === 'string') {
+        const lowerKey = key.toLowerCase();
+        if (lowerKey.includes('cnpj') || lowerKey === 'numero_inscricao') return value;
+        if (lowerKey.includes('cep')) return formatCEP(value);
+        if (lowerKey.includes('data') || lowerKey.includes('dt_') || lowerKey.includes('_dt')) return formatDate(value);
+        if (lowerKey.includes('capital_social') || lowerKey.includes('valor')) return formatCurrency(value);
+        if (/^\d{14}$/.test(value)) return formatCNPJ(value);
+        return value;
+      }
+      if (typeof value === 'number') {
+        if (key.includes('capital_social') || key.includes('valor')) return formatCurrency(value);
+        return value;
+      }
+      return value;
+    };
+
+    const countFilledFields = (obj) => {
+      if (!obj) return 0;
+      let count = 0;
+      const traverse = (item) => {
+        if (item === null || item === undefined) return;
+        if (Array.isArray(item)) { item.forEach(traverse); return; }
+        if (typeof item === 'object') { Object.values(item).forEach(traverse); return; }
+        count++;
+      };
+      traverse(obj);
+      return count;
+    };
+
+    const countTotalFields = (obj) => {
+      if (!obj) return 0;
+      let count = 0;
+      const traverse = (item) => {
+        if (item === null || item === undefined) return;
+        if (Array.isArray(item)) { item.forEach(traverse); return; }
+        if (typeof item === 'object') {
+          Object.keys(item).forEach(k => { count++; traverse(item[k]); });
+          return;
+        }
+      };
+      traverse(obj);
+      return count;
+    };
+
+    // =====================================================================
+    // Validação real de CNPJ (dígitos verificadores) — evita chamadas
+    // desnecessárias à API para números claramente inválidos
+    // =====================================================================
+    const calcCheckDigit = (digitsArr) => {
+      let weight = digitsArr.length - 7;
+      let sum = 0;
+      for (let i = 0; i < digitsArr.length; i++) {
+        sum += digitsArr[i] * weight;
+        weight--;
+        if (weight < 2) weight = 9;
+      }
+      const remainder = sum % 11;
+      return remainder < 2 ? 0 : 11 - remainder;
+    };
+
+    const isValidCNPJ = (value) => {
+      const clean = unformatCNPJ(value);
+      if (clean.length !== 14) return false;
+      if (/^(\d)\1{13}$/.test(clean)) return false; // todos os dígitos iguais
+      const digits = clean.split('').map(Number);
+      const d1 = calcCheckDigit(digits.slice(0, 12));
+      const d2 = calcCheckDigit(digits.slice(0, 12).concat(d1));
+      return d1 === digits[12] && d2 === digits[13];
+    };
+
+    // =====================================================================
+    // Busca resiliente: timeout, nova tentativa automática em falhas de
+    // rede/servidor, e mensagens de erro específicas por situação
+    // =====================================================================
+    const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+    async function fetchCNPJWithRetry(cnpj, { retries = 2, timeoutMs = 15000 } = {}) {
+      let lastError;
+      for (let attempt = 0; attempt <= retries; attempt++) {
+        if (!navigator.onLine) {
+          lastError = new Error('Você está sem conexão com a internet.');
+          lastError.code = 'OFFLINE';
+          await sleep(600 * (attempt + 1));
+          continue;
+        }
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+          const response = await fetch(`https://publica.cnpj.ws/cnpj/${cnpj}`, { signal: controller.signal });
+          clearTimeout(timeoutId);
+
+          if (response.status === 404) {
+            const err = new Error('CNPJ não encontrado na base da Receita Federal.');
+            err.code = 'NOT_FOUND';
+            throw err;
+          }
+          if (response.status === 429) {
+            const err = new Error('Muitas consultas em pouco tempo. Aguarde alguns segundos e tente novamente.');
+            err.code = 'RATE_LIMIT';
+            throw err;
+          }
+          if (response.status >= 500) {
+            throw new Error(`O serviço de consulta está instável (erro ${response.status}).`);
+          }
+          if (!response.ok) {
+            throw new Error(`Não foi possível concluir a consulta (erro ${response.status}).`);
+          }
+
+          try {
+            return await response.json();
+          } catch (parseErr) {
+            throw new Error('A resposta recebida do servidor é inválida.');
+          }
+        } catch (err) {
+          clearTimeout(timeoutId);
+          if (err.code === 'NOT_FOUND' || err.code === 'RATE_LIMIT') throw err;
+          if (err.name === 'AbortError') {
+            lastError = new Error('O servidor demorou demais para responder.');
+            lastError.code = 'TIMEOUT';
+          } else {
+            lastError = err;
+          }
+          if (attempt < retries) { await sleep(700 * (attempt + 1)); continue; }
+          throw lastError;
+        }
+      }
+      throw lastError || new Error('Falha desconhecida ao consultar o CNPJ.');
+    }
+
+    // =====================================================================
+    // Toasts
+    // =====================================================================
+    const ToastStack = ({ toasts, onDismiss }) => (
+      <div className="fixed top-4 right-4 z-[100] flex flex-col gap-2 w-[calc(100%-2rem)] max-w-sm">
+        {toasts.map(t => (
+          <div
+            key={t.id}
+            className={`toast-enter rounded-lg shadow-lg px-4 py-3 text-sm font-medium flex items-start gap-2 ${
+              t.type === 'success' ? 'bg-emerald-600 text-white' :
+              t.type === 'error' ? 'bg-red-600 text-white' :
+              'bg-gray-800 text-white'
+            }`}
+            role="status"
+          >
+            <span className="flex-1">{t.message}</span>
+            <button onClick={() => onDismiss(t.id)} className="opacity-70 hover:opacity-100 leading-none" aria-label="Fechar aviso">✕</button>
+          </div>
+        ))}
+      </div>
+    );
+
+    // =====================================================================
+    // Modal de confirmação (substitui window.confirm, que é bloqueante
+    // e inconsistente entre navegadores)
+    // =====================================================================
+    const ConfirmModal = ({ state, onCancel }) => {
+      if (!state) return null;
+      return (
+        <div className="modal-backdrop fixed inset-0 bg-black/40 z-[110] flex items-center justify-center p-4" onClick={onCancel}>
+          <div className="modal-panel bg-white rounded-xl shadow-2xl max-w-sm w-full p-5" onClick={e => e.stopPropagation()}>
+            <h3 className="font-bold text-gray-800 mb-2">{state.title || 'Confirmar ação'}</h3>
+            <p className="text-sm text-gray-600 mb-5">{state.message}</p>
+            <div className="flex justify-end gap-2">
+              <button onClick={onCancel} className="px-4 py-2 text-sm rounded-lg bg-gray-100 hover:bg-gray-200 font-medium">Cancelar</button>
+              <button
+                onClick={() => { state.onConfirm(); onCancel(); }}
+                className="px-4 py-2 text-sm rounded-lg bg-red-500 hover:bg-red-600 text-white font-medium"
+              >
+                {state.confirmLabel || 'Confirmar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    // ---------- Ícones (SVG inline, sem dependência externa) ----------
+    const Icon = {
+      search: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>,
+      history: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3v5h5"/><path d="M3.05 13a9 9 0 1 0 .5-4.5"/><path d="M12 7v5l4 2"/></svg>,
+      copy: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>,
+      download: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>,
+      refresh: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg>,
+      plus: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>,
+      alert: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>,
+      wifiOff: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="1" y1="1" x2="23" y2="23"/><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/><path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"/><path d="M10.71 5.05A16 16 0 0 1 22.58 9"/><path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>,
+      building: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18Z"/><path d="M6 12H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"/><path d="M18 9h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2"/><line x1="10" y1="6" x2="10" y2="6"/><line x1="14" y1="6" x2="14" y2="6"/><line x1="10" y1="10" x2="10" y2="10"/><line x1="14" y1="10" x2="14" y2="10"/><line x1="10" y1="14" x2="10" y2="14"/><line x1="14" y1="14" x2="14" y2="14"/><line x1="10" y1="18" x2="10" y2="18"/><line x1="14" y1="18" x2="14" y2="18"/></svg>,
+    };
+
+    // =====================================================================
+    // Componente principal
+    // =====================================================================
+    const App = () => {
+      const [cnpjInput, setCnpjInput] = useState('');
+      const [loading, setLoading] = useState(false);
+      const [data, setData] = useState(null);
+      const [error, setError] = useState(null);
+      const [activeTab, setActiveTab] = useState('resumo');
+      const [searchTerm, setSearchTerm] = useState('');
+      const [expandedSections, setExpandedSections] = useState({});
+      const [history, setHistory] = useState([]);
+      const [showHistory, setShowHistory] = useState(false);
+      const [filterStatus, setFilterStatus] = useState('todos');
+      const [isOnline, setIsOnline] = useState(navigator.onLine);
+      const [toasts, setToasts] = useState([]);
+      const [confirmState, setConfirmState] = useState(null);
+      const [validationHint, setValidationHint] = useState(null);
+      const rawRef = useRef(null);
+      const cacheRef = useRef(new Map()); // cache em memória por sessão
+
+      // ---------- Toasts ----------
+      const addToast = useCallback((message, type = 'info') => {
+        const id = `${Date.now()}-${Math.random()}`;
+        setToasts(prev => [...prev, { id, message, type }]);
+        setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 4000);
+      }, []);
+      const dismissToast = useCallback((id) => setToasts(prev => prev.filter(t => t.id !== id)), []);
+
+      // ---------- Conectividade ----------
+      useEffect(() => {
+        const goOnline = () => { setIsOnline(true); addToast('Conexão restabelecida.', 'success'); };
+        const goOffline = () => { setIsOnline(false); addToast('Você está sem conexão com a internet.', 'error'); };
+        window.addEventListener('online', goOnline);
+        window.addEventListener('offline', goOffline);
+        return () => {
+          window.removeEventListener('online', goOnline);
+          window.removeEventListener('offline', goOffline);
+        };
+      }, [addToast]);
+
+      // Carregar histórico do localStorage
+      useEffect(() => {
+        const saved = safeStorage.get('cnpjHistory');
+        if (Array.isArray(saved)) setHistory(saved);
+      }, []);
+
+      const saveToHistory = (cnpj, resultData) => {
+        const entry = {
+          cnpj: formatCNPJ(cnpj),
+          razao_social: resultData.razao_social || '',
+          situacao: resultData.situacao_cadastral || '',
+          data_consulta: new Date().toISOString(),
+          data: resultData
+        };
+        setHistory(prev => {
+          const newHistory = [entry, ...prev.filter(h => h.cnpj !== entry.cnpj)].slice(0, 20);
+          if (!safeStorage.set('cnpjHistory', newHistory)) {
+            addToast('Histórico não pôde ser salvo (armazenamento indisponível).', 'error');
+          }
+          return newHistory;
+        });
+      };
+
+      const runConsult = async (cleaned, { bypassCache = false } = {}) => {
+        setLoading(true);
+        setError(null);
+        setData(null);
+        setActiveTab('resumo');
+        setExpandedSections({});
+        setSearchTerm('');
+
+        if (!bypassCache && cacheRef.current.has(cleaned)) {
+          const cached = cacheRef.current.get(cleaned);
+          setData(cached);
+          setLoading(false);
+          addToast('Resultado carregado do cache desta sessão.', 'info');
+          return;
+        }
+
+        try {
+          const json = await fetchCNPJWithRetry(cleaned);
+          cacheRef.current.set(cleaned, json);
+          setData(json);
+          saveToHistory(cleaned, json);
+          addToast('Consulta concluída com sucesso.', 'success');
+        } catch (err) {
+          const message = err?.message || 'Erro inesperado ao consultar a API.';
+          setError(message);
+          addToast(message, 'error');
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      const handleConsult = () => {
+        const cleaned = unformatCNPJ(cnpjInput);
+        if (cleaned.length !== 14) {
+          setValidationHint('Digite os 14 números do CNPJ.');
+          setError('CNPJ inválido. Digite 14 números.');
+          setData(null);
+          return;
+        }
+        if (!isValidCNPJ(cleaned)) {
+          setValidationHint('Os dígitos verificadores não conferem — revise o número digitado.');
+          setError('CNPJ inválido: os dígitos verificadores não conferem.');
+          setData(null);
+          return;
+        }
+        setValidationHint(null);
+        runConsult(cleaned);
+      };
+
+      const handleRefresh = () => {
+        if (!data?.cnpj) return;
+        runConsult(unformatCNPJ(data.cnpj), { bypassCache: true });
+      };
+
+      const handleCopyText = async (text, successMessage) => {
+        try {
+          await navigator.clipboard.writeText(text);
+          addToast(successMessage, 'success');
+        } catch (e) {
+          try {
+            const textarea = document.createElement('textarea');
+            textarea.value = text;
+            textarea.style.position = 'fixed';
+            textarea.style.opacity = '0';
+            document.body.appendChild(textarea);
+            textarea.select();
+            document.execCommand('copy');
+            document.body.removeChild(textarea);
+            addToast(successMessage, 'success');
+          } catch (fallbackErr) {
+            addToast('Não foi possível copiar automaticamente.', 'error');
+          }
+        }
+      };
+
+      const handleCopyJSON = () => {
+        if (!data) return;
+        handleCopyText(JSON.stringify(data, null, 2), 'JSON copiado para a área de transferência!');
+      };
+
+      const handleCopyCNPJ = () => {
+        if (!data) return;
+        handleCopyText(formatCNPJ(data.cnpj || ''), 'CNPJ copiado!');
+      };
+
+      const csvEscape = (val) => `"${String(val ?? '').replace(/"/g, '""')}"`;
+
+      const handleExportCSV = () => {
+        if (!data) return;
+        try {
+          const estabelecimento = data.estabelecimento || {};
+          const row = {
+            'CNPJ': formatCNPJ(data.cnpj || ''),
+            'Razão Social': data.razao_social || '',
+            'Nome Fantasia': data.nome_fantasia || '',
+            'Situação': data.situacao_cadastral || '',
+            'Capital Social': formatCurrency(data.capital_social),
+            'Logradouro': estabelecimento.logradouro || '',
+            'Número': estabelecimento.numero || '',
+            'Bairro': estabelecimento.bairro || '',
+            'Cidade': estabelecimento.cidade?.nome || '',
+            'UF': estabelecimento.estado?.sigla || '',
+            'CEP': formatCEP(estabelecimento.cep || ''),
+            'Telefone': estabelecimento.telefone1 || '',
+            'Email': estabelecimento.email || '',
+            'CNAE Principal': data.cnae_principal?.descricao || '',
+          };
+          const headers = Object.keys(row);
+          const values = headers.map(h => csvEscape(row[h]));
+          const csvContent = '\uFEFF' + [headers.map(csvEscape).join(';'), values.join(';')].join('\n');
+          const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+          const link = document.createElement('a');
+          link.href = URL.createObjectURL(blob);
+          link.download = `cnpj_${unformatCNPJ(data.cnpj)}.csv`;
+          link.click();
+          URL.revokeObjectURL(link.href);
+          addToast('Arquivo CSV exportado.', 'success');
+        } catch (e) {
+          addToast('Não foi possível exportar o CSV.', 'error');
+        }
+      };
+
+      const handleNewConsult = () => {
+        setCnpjInput('');
+        setData(null);
+        setError(null);
+        setValidationHint(null);
+        setActiveTab('resumo');
+        setExpandedSections({});
+        setSearchTerm('');
+      };
+
+      const handleKeyDown = (e) => { if (e.key === 'Enter') handleConsult(); };
+
+      const toggleSection = (key) => setExpandedSections(prev => ({ ...prev, [key]: !prev[key] }));
+
+      const toggleAllSections = (expand) => {
+        if (!data) return;
+        const newState = {};
+        const traverse = (obj, parentKey = '') => {
+          if (obj && typeof obj === 'object') {
+            Object.keys(obj).forEach(key => {
+              const fullKey = parentKey ? `${parentKey}.${key}` : key;
+              if (obj[key] !== null && typeof obj[key] === 'object') {
+                newState[fullKey] = expand;
+                traverse(obj[key], fullKey);
+              }
+            });
+          }
+        };
+        traverse(data);
+        setExpandedSections(newState);
+      };
+
+      // Filtro local nos dados completos
+      const filterData = (obj, term) => {
+        if (!term.trim()) return obj;
+        const lowerTerm = term.toLowerCase();
+        const filter = (item) => {
+          if (item === null || item === undefined) return false;
+          if (typeof item === 'string') return item.toLowerCase().includes(lowerTerm);
+          if (typeof item === 'number') return String(item).includes(lowerTerm);
+          if (typeof item === 'boolean') return String(item).toLowerCase().includes(lowerTerm);
+          if (Array.isArray(item)) return item.some(sub => filter(sub));
+          if (typeof item === 'object') return Object.values(item).some(val => filter(val));
+          return false;
+        };
+        const filterObj = (item) => {
+          if (item === null || item === undefined) return null;
+          if (typeof item !== 'object') return filter(item) ? item : null;
+          if (Array.isArray(item)) {
+            const filtered = item.map(filterObj).filter(v => v !== null);
+            return filtered.length > 0 ? filtered : null;
+          }
+          const result = {};
+          let has = false;
+          for (const [key, val] of Object.entries(item)) {
+            const filteredVal = filterObj(val);
+            if (filteredVal !== null) { result[key] = filteredVal; has = true; }
+          }
+          return has ? result : null;
+        };
+        return filterObj(obj);
+      };
+
+      const filteredData = useMemo(() => {
+        if (!data) return null;
+        if (!searchTerm.trim()) return data;
+        return filterData(data, searchTerm);
+      }, [data, searchTerm]);
+
+      // ---------- Renderização dinâmica ----------
+      const renderDynamicData = (obj, parentKey = '') => {
+        if (obj === null || obj === undefined) return <span className="text-gray-400 italic">null</span>;
+        if (typeof obj !== 'object') {
+          const formatted = formatValue(parentKey, obj);
+          return <span className="text-gray-800">{String(formatted) || '-'}</span>;
+        }
+        if (Array.isArray(obj)) {
+          if (obj.length === 0) return <span className="text-gray-400 italic">Lista vazia</span>;
+          return (
+            <ul className="list-disc pl-5 space-y-1">
+              {obj.map((item, idx) => {
+                const key = `${parentKey}[${idx}]`;
+                if (typeof item === 'object') {
+                  return <li key={key} className="border-l-2 border-green-200 pl-3 mt-1">{renderDynamicData(item, key)}</li>;
+                }
+                return <li key={key}>{renderDynamicData(item, key)}</li>;
+              })}
+            </ul>
+          );
+        }
+        const entries = Object.entries(obj);
+        if (entries.length === 0) return <span className="text-gray-400 italic">Objeto vazio</span>;
+        return (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-3">
+            {entries.map(([key, value]) => {
+              const formattedKey = key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+              const isExpandable = value !== null && typeof value === 'object';
+              const isArray = Array.isArray(value);
+              const sectionKey = `${parentKey}.${key}`;
+              const isExpanded = expandedSections[sectionKey] || false;
+
+              if (isExpandable) {
+                return (
+                  <div key={key} className="col-span-1 md:col-span-2 border-b border-gray-100 pb-3 mb-2">
+                    <div
+                      className="flex items-center justify-between cursor-pointer hover:bg-gray-50 p-1 rounded"
+                      onClick={() => toggleSection(sectionKey)}
+                      role="button"
+                      tabIndex={0}
+                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') toggleSection(sectionKey); }}
+                    >
+                      <span className="font-semibold text-gray-700 text-sm uppercase tracking-wide flex items-center">
+                        <span className="mr-2">{isExpanded ? '▼' : '▶'}</span>
+                        {formattedKey} {isArray && `(${value.length})`}
+                      </span>
+                      <span className="text-xs text-gray-400">{isArray ? `${value.length} itens` : 'objeto'}</span>
+                    </div>
+                    {isExpanded && (
+                      <div className="mt-2 pl-4 border-l-2 border-green-200">{renderDynamicData(value, sectionKey)}</div>
+                    )}
+                  </div>
+                );
+              }
+              const displayValue = formatValue(key, value);
+              return (
+                <div key={key} className="flex flex-col">
+                  <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">{formattedKey}</span>
+                  <span className="text-gray-800 break-words">{String(displayValue) || '-'}</span>
+                </div>
+              );
+            })}
+          </div>
+        );
+      };
+
+      // ---------- Resumo ----------
+      const renderResumo = () => {
+        if (!data) return null;
+        const razaoSocial = data.razao_social || '';
+        const fantasia = data.nome_fantasia || '';
+        const situacao = data.situacao_cadastral || '';
+        const dataSituacao = data.data_situacao_cadastral || '';
+        const capitalSocial = data.capital_social || '';
+        const endereco = data.estabelecimento || {};
+        const logradouro = endereco.logradouro || '';
+        const numero = endereco.numero || '';
+        const complemento = endereco.complemento || '';
+        const bairro = endereco.bairro || '';
+        const cep = endereco.cep || '';
+        const cidade = endereco.cidade?.nome || '';
+        const uf = endereco.estado?.sigla || '';
+        const telefone1 = endereco.telefone1 || '';
+        const telefone2 = endereco.telefone2 || '';
+        const email = endereco.email || '';
+        const cnaePrincipal = data.cnae_principal?.descricao || '';
+        const cnaeCodigo = data.cnae_principal?.codigo || '';
+        const inscricoesEstaduais = data.inscricoes_estaduais || [];
+        const cnpjFormatado = formatCNPJ(data.cnpj || '');
+        const isAtiva = situacao === 'ATIVA';
+
+        return (
+          <div className="bg-white rounded-xl card-shadow p-6 mb-6 fade-in">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-green-200 pb-3 mb-5">
+              <h3 className="text-lg font-bold text-gray-800 flex items-center">
+                <span className="bg-green-100 text-green-800 text-xs font-semibold px-3 py-1 rounded-full mr-3">RESUMO</span>
+                Dados principais
+              </h3>
+              <span className={`text-xs font-bold px-3 py-1 rounded-full flex items-center gap-1 ${isAtiva ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                <span className={`w-2 h-2 rounded-full ${isAtiva ? 'bg-green-500' : 'bg-red-500'}`}></span>
+                {situacao || 'Situação desconhecida'}
+              </span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              <div>
+                <p className="text-sm text-gray-500">Razão Social</p>
+                <p className="font-semibold text-gray-800">{razaoSocial || '-'}</p>
+              </div>
+              <div>
+                <p className="text-sm text-gray-500">Nome Fantasia</p>
+                <p className="font-semibold text-gray-800">{fantasia || '-'}</p>
+              </div>
+              <div>
+                <p className="text-sm text-gray-500">Desde</p>
+                <p className="font-semibold text-gray-800">{dataSituacao ? formatDate(dataSituacao) : '-'}</p>
+              </div>
+              <div>
+                <p className="text-sm text-gray-500 flex items-center gap-1">CNPJ</p>
+                <div className="flex items-center gap-2">
+                  <p className="font-semibold text-gray-800">{cnpjFormatado || '-'}</p>
+                  <button onClick={handleCopyCNPJ} className="text-gray-400 hover:text-green-600 transition-colors" title="Copiar CNPJ" aria-label="Copiar CNPJ">
+                    <Icon.copy className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+              <div>
+                <p className="text-sm text-gray-500">CNAE Principal</p>
+                <p className="font-semibold text-gray-800">{cnaeCodigo} {cnaePrincipal ? `- ${cnaePrincipal}` : ''}</p>
+              </div>
+              <div>
+                <p className="text-sm text-gray-500">Capital Social</p>
+                <p className="font-semibold text-gray-800">{formatCurrency(capitalSocial) || '-'}</p>
+              </div>
+            </div>
+            <hr className="my-4 border-green-100" />
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              <div>
+                <p className="text-sm text-gray-500">Endereço</p>
+                <p className="text-gray-800">
+                  {logradouro} {numero} {complemento && `- ${complemento}`}
+                  <br />
+                  {bairro && `${bairro} - `}{cidade}/{uf}
+                  <br />
+                  {cep && `CEP: ${formatCEP(cep)}`}
+                </p>
+              </div>
+              <div>
+                <p className="text-sm text-gray-500">Telefone</p>
+                <p className="text-gray-800">{telefone1 || '-'}{telefone2 && <span className="block">{telefone2}</span>}</p>
+              </div>
+              <div>
+                <p className="text-sm text-gray-500">E-mail</p>
+                <p className="text-gray-800 break-words">{email || '-'}</p>
+              </div>
+              <div className="sm:col-span-2 lg:col-span-3">
+                <p className="text-sm text-gray-500">Inscrições Estaduais</p>
+                {inscricoesEstaduais.length > 0 ? (
+                  <ul className="list-disc pl-5 text-gray-800">
+                    {inscricoesEstaduais.map((ie, idx) => (
+                      <li key={idx}>{ie.uf?.sigla || ''}: {ie.numero || ''}{ie.situacao && ` (${ie.situacao})`}</li>
+                    ))}
+                  </ul>
+                ) : <span className="text-gray-800">-</span>}
+              </div>
+            </div>
+          </div>
+        );
+      };
+
+      const renderStats = () => {
+        if (!data) return null;
+        const filled = countFilledFields(data);
+        const total = countTotalFields(data);
+        const percent = total > 0 ? Math.round((filled / total) * 100) : 0;
+        return (
+          <div className="bg-white rounded-xl card-shadow p-4 mb-6 flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-medium text-gray-600">Campos preenchidos</span>
+              <span className="field-count">{filled} / {total}</span>
+              <span className="text-sm text-gray-500">({percent}%)</span>
+            </div>
+            <button onClick={handleRefresh} className="text-sm text-gray-500 hover:text-green-600 flex items-center gap-1.5 transition-colors" title="Consultar novamente sem usar o cache">
+              <Icon.refresh className="w-4 h-4" />
+              Atualizar dados
+            </button>
+          </div>
+        );
+      };
+
+      const renderActions = () => {
+        if (!data) return null;
+        return (
+          <div className="flex flex-wrap gap-3 mb-6">
+            <button onClick={() => setActiveTab('json')} className="px-4 py-2 bg-gray-200 hover:bg-gray-300 rounded-lg text-sm font-medium transition-all">Ver JSON</button>
+            <button onClick={handleCopyJSON} className="px-4 py-2 bg-green-500 hover:bg-green-600 text-white rounded-lg text-sm font-medium transition-all flex items-center gap-2">
+              <Icon.copy className="w-4 h-4" /> Copiar JSON
+            </button>
+            <button onClick={handleExportCSV} className="px-4 py-2 bg-teal-500 hover:bg-teal-600 text-white rounded-lg text-sm font-medium transition-all flex items-center gap-2">
+              <Icon.download className="w-4 h-4" /> Exportar CSV
+            </button>
+            <button onClick={handleNewConsult} className="px-4 py-2 bg-direct hover:opacity-90 text-white rounded-lg text-sm font-medium transition-all flex items-center gap-2">
+              <Icon.plus className="w-4 h-4" /> Nova Consulta
+            </button>
+          </div>
+        );
+      };
+
+      const renderTabs = () => {
+        if (!data) return null;
+        const tabs = [
+          { id: 'resumo', label: 'Resumo' },
+          { id: 'completo', label: 'Dados Completos' },
+          { id: 'json', label: 'JSON Bruto' },
+        ];
+        return (
+          <div className="flex border-b border-gray-200 mb-6 gap-1">
+            {tabs.map(tab => (
+              <button
+                key={tab.id}
+                className={`px-4 py-2 rounded-t-lg text-sm font-medium transition-all ${activeTab === tab.id ? 'tab-active' : 'tab-inactive'}`}
+                onClick={() => setActiveTab(tab.id)}
+                aria-current={activeTab === tab.id}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        );
+      };
+
+      const renderTabContent = () => {
+        if (!data) return null;
+        if (activeTab === 'resumo') {
+          return <>{renderResumo()}{renderStats()}{renderActions()}</>;
+        }
+        if (activeTab === 'completo') {
+          const filled = countFilledFields(data);
+          const total = countTotalFields(data);
+          const noResults = searchTerm.trim() && (!filteredData || countTotalFields(filteredData) === 0);
+          return (
+            <div className="bg-white rounded-xl card-shadow p-6 fade-in">
+              <div className="flex flex-wrap items-center justify-between border-b border-green-200 pb-3 mb-4 gap-2">
+                <h3 className="text-lg font-bold text-gray-800 flex items-center flex-wrap">
+                  <span className="bg-green-100 text-green-800 text-xs font-semibold px-3 py-1 rounded-full mr-3">DADOS COMPLETOS</span>
+                  <span className="text-sm font-normal text-gray-500">({filled} campos preenchidos de {total})</span>
+                </h3>
+                <div className="flex gap-2">
+                  <button onClick={() => toggleAllSections(true)} className="px-3 py-1 text-sm bg-green-100 hover:bg-green-200 rounded-md transition-all">Expandir todos</button>
+                  <button onClick={() => toggleAllSections(false)} className="px-3 py-1 text-sm bg-gray-100 hover:bg-gray-200 rounded-md transition-all">Recolher todos</button>
+                </div>
+              </div>
+              <div className="mb-4 relative">
+                <Icon.search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                <input
+                  type="text"
+                  placeholder="Buscar campo..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="w-full pl-9 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none"
+                />
+              </div>
+              <div className="text-sm">
+                {noResults
+                  ? <p className="text-gray-400 italic py-6 text-center">Nenhum campo encontrado para "{searchTerm}".</p>
+                  : renderDynamicData(filteredData || data)}
+              </div>
+            </div>
+          );
+        }
+        if (activeTab === 'json') {
+          return (
+            <div className="bg-white rounded-xl card-shadow p-6 fade-in">
+              <h3 className="text-lg font-bold text-gray-800 border-b border-green-200 pb-3 mb-4 flex items-center">
+                <span className="bg-green-100 text-green-800 text-xs font-semibold px-3 py-1 rounded-full mr-3">JSON BRUTO</span>
+                <button onClick={handleCopyJSON} className="ml-auto px-3 py-1 bg-green-500 hover:bg-green-600 text-white text-sm rounded-md transition-all flex items-center gap-1.5">
+                  <Icon.copy className="w-3.5 h-3.5" /> Copiar
+                </button>
+              </h3>
+              <div ref={rawRef} className="raw-json"><pre>{JSON.stringify(data, null, 2)}</pre></div>
+            </div>
+          );
+        }
+        return null;
+      };
+
+      // ---------- Histórico ----------
+      const renderHistory = () => {
+        const filteredHistory = filterStatus === 'todos' ? history : history.filter(h => {
+          const situacao = h.situacao || '';
+          return filterStatus === 'ativa' ? situacao === 'ATIVA' : situacao !== 'ATIVA';
+        });
+
+        return (
+          <div className="bg-white rounded-xl card-shadow p-4 mb-6 fade-in">
+            <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+              <h4 className="font-semibold text-gray-700">Histórico de Consultas</h4>
+              <div className="flex gap-2 flex-wrap">
+                {['todos', 'ativa', 'inativa'].map(f => (
+                  <button
+                    key={f}
+                    className={`px-2 py-1 text-xs rounded font-medium transition-colors ${filterStatus === f ? 'bg-green-500 text-white' : 'bg-gray-200 hover:bg-gray-300'}`}
+                    onClick={() => setFilterStatus(f)}
+                  >
+                    {f === 'todos' ? 'Todos' : f === 'ativa' ? 'Ativos' : 'Inativos'}
+                  </button>
+                ))}
+                <button
+                  className="px-2 py-1 text-xs bg-red-500 text-white rounded hover:bg-red-600 font-medium transition-colors"
+                  disabled={history.length === 0}
+                  onClick={() => setConfirmState({
+                    title: 'Limpar histórico',
+                    message: 'Isso removerá todas as consultas salvas neste navegador. Essa ação não pode ser desfeita.',
+                    confirmLabel: 'Limpar tudo',
+                    onConfirm: () => {
+                      setHistory([]);
+                      safeStorage.remove('cnpjHistory');
+                      addToast('Histórico limpo.', 'success');
+                    }
+                  })}
+                >
+                  Limpar
+                </button>
+              </div>
+            </div>
+            {filteredHistory.length === 0 ? (
+              <p className="text-gray-400 text-sm py-3 text-center">Nenhuma consulta encontrada.</p>
+            ) : (
+              <ul className="max-h-60 overflow-y-auto">
+                {filteredHistory.map((item, idx) => (
+                  <li key={idx} className="history-item py-2">
+                    <div className="flex justify-between items-center flex-wrap gap-1">
+                      <div>
+                        <span className="font-medium text-green-600">{item.cnpj}</span>
+                        <span className="text-gray-600 text-sm ml-2">{item.razao_social}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className={`text-xs px-2 py-0.5 rounded-full ${item.situacao === 'ATIVA' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                          {item.situacao || 'N/A'}
+                        </span>
+                        <button
+                          className="text-xs text-green-500 hover:underline font-medium"
+                          onClick={() => {
+                            setCnpjInput(formatCNPJ(unformatCNPJ(item.cnpj)));
+                            setData(item.data);
+                            cacheRef.current.set(unformatCNPJ(item.cnpj), item.data);
+                            setActiveTab('resumo');
+                            setExpandedSections({});
+                            setSearchTerm('');
+                            setError(null);
+                          }}
+                        >
+                          Carregar
+                        </button>
+                      </div>
+                    </div>
+                    <div className="text-xs text-gray-400 mt-1">{new Date(item.data_consulta).toLocaleString('pt-BR')}</div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        );
+      };
+
+      const digitsCount = unformatCNPJ(cnpjInput).length;
+
+      return (
+        <div className="min-h-screen bg-green-soft py-6 px-4">
+          <ToastStack toasts={toasts} onDismiss={dismissToast} />
+          <ConfirmModal state={confirmState} onCancel={() => setConfirmState(null)} />
+
+          <div className="max-w-7xl mx-auto">
+            {!isOnline && (
+              <div className="mb-4 bg-amber-50 border border-amber-300 text-amber-800 rounded-lg px-4 py-2.5 text-sm flex items-center gap-2 fade-in">
+                <Icon.wifiOff className="w-4 h-4 flex-shrink-0" />
+                Sem conexão com a internet. As consultas serão retomadas automaticamente quando a conexão voltar.
+              </div>
+            )}
+
+            {/* HEADER */}
+            <header className="bg-direct rounded-2xl card-shadow p-5 mb-6 flex flex-col sm:flex-row items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="bg-white/10 rounded-xl p-2.5 hidden sm:block">
+                  <Icon.building className="w-7 h-7 text-emerald-200" />
+                </div>
+                <div className="text-white text-center sm:text-left">
+                  <span className="logo-text">DIRECTCONTROL</span>
+                  <div className="logo-sub text-xs">BPM · Publicidade & Marketing</div>
+                </div>
+              </div>
+              <div className="text-center sm:text-right mt-3 sm:mt-0">
+                <h1 className="text-2xl font-bold text-white">Consulta CNPJ</h1>
+                <p className="text-sm text-green-200">Informações completas da Receita Federal</p>
+              </div>
+            </header>
+
+            {/* BUSCA */}
+            <div className="bg-white rounded-xl card-shadow p-6 mb-6">
+              <div className="flex flex-col sm:flex-row gap-3">
+                <div className="flex-1">
+                  <label htmlFor="cnpj" className="block text-sm font-medium text-gray-700 mb-1">CNPJ</label>
+                  <div className="relative">
+                    <input
+                      id="cnpj"
+                      type="text"
+                      inputMode="numeric"
+                      autoComplete="off"
+                      value={cnpjInput}
+                      onChange={(e) => {
+                        setCnpjInput(formatCNPJ(e.target.value));
+                        if (error) setError(null);
+                        if (validationHint) setValidationHint(null);
+                      }}
+                      onKeyDown={handleKeyDown}
+                      placeholder="00.000.000/0000-00"
+                      className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-green-500 outline-none transition-all text-gray-800 ${error ? 'border-red-300' : 'border-gray-300 focus:border-green-500'}`}
+                      maxLength={18}
+                      disabled={loading}
+                      aria-invalid={!!error}
+                      aria-describedby="cnpj-hint"
+                    />
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-400">{digitsCount}/14</span>
+                  </div>
+                  {validationHint && <p id="cnpj-hint" className="text-xs text-amber-600 mt-1">{validationHint}</p>}
+                </div>
+                <div className="flex items-end gap-2">
+                  <button
+                    onClick={handleConsult}
+                    disabled={loading}
+                    className="w-full sm:w-auto px-8 py-3 btn-direct text-white font-medium rounded-lg flex items-center justify-center gap-2"
+                  >
+                    {loading ? (
+                      <>
+                        <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        Consultando...
+                      </>
+                    ) : (
+                      <><Icon.search className="w-4 h-4" /> CONSULTAR</>
+                    )}
+                  </button>
+                  <button
+                    onClick={() => setShowHistory(!showHistory)}
+                    className={`px-3 py-3 rounded-lg text-sm font-medium transition-all flex items-center gap-1.5 ${showHistory ? 'bg-green-200' : 'bg-gray-200 hover:bg-gray-300'}`}
+                    title="Histórico"
+                  >
+                    <Icon.history className="w-4 h-4" />
+                    {history.length > 0 && <span className="text-xs bg-white/70 rounded-full px-1.5">{history.length}</span>}
+                  </button>
+                </div>
+              </div>
+
+              {error && (
+                <div className="mt-4 p-3 bg-red-50 border-l-4 border-red-500 text-red-700 rounded-md text-sm flex items-start gap-2">
+                  <Icon.alert className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                  <div className="flex-1">
+                    <span className="font-medium">Não foi possível concluir: </span>{error}
+                  </div>
+                  <button onClick={handleConsult} className="text-red-600 hover:underline font-medium text-xs whitespace-nowrap">Tentar de novo</button>
+                </div>
+              )}
+
+              {loading && (
+                <div className="mt-5 space-y-3" aria-live="polite" aria-label="Consultando empresa">
+                  <div className="flex items-center gap-2 text-green-700 text-sm font-medium mb-1">
+                    <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    Consultando empresa na Receita Federal...
+                  </div>
+                  <div className="skeleton h-4 w-1/2"></div>
+                  <div className="skeleton h-4 w-2/3"></div>
+                  <div className="skeleton h-4 w-1/3"></div>
+                </div>
+              )}
+            </div>
+
+            {showHistory && renderHistory()}
+
+            {data && <>{renderTabs()}{renderTabContent()}</>}
+
+            {!data && !loading && !error && (
+              <div className="bg-white rounded-xl card-shadow p-10 text-center text-gray-400 fade-in">
+                <Icon.building className="w-10 h-10 mx-auto mb-3 opacity-40" />
+                <p className="text-sm">Digite um CNPJ acima para consultar os dados públicos da empresa.</p>
+              </div>
+            )}
+
+            <footer className="mt-8 border-t border-green-200 pt-4 text-center text-sm text-gray-500">
+              <p>
+                Criado por <a href="https://directcontrol.com.br" target="_blank" rel="noopener noreferrer" className="text-green-600 hover:underline font-medium">Direct Control</a>
+                {' '}· BPM & Publicidade · Marketing
+              </p>
+              <p className="text-xs mt-1">
+                Dados fornecidos pela API pública{' '}
+                <a href="https://publica.cnpj.ws" target="_blank" rel="noopener noreferrer" className="text-green-500 hover:underline">publica.cnpj.ws</a>
+              </p>
+            </footer>
+          </div>
+        </div>
+      );
+    };
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
