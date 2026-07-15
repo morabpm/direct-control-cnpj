@@ -113,7 +113,7 @@
       };
 
       document.addEventListener('contextmenu', function (e) {
-        e.preventDefault();
+        if (!isFormField(e.target)) e.preventDefault();
       });
 
       document.addEventListener('copy', function (e) {
